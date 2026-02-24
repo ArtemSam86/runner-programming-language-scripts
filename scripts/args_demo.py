@@ -1,0 +1,1 @@
+import sys, json; print(json.dumps({"args": sys.argv[1:], "data": json.load(sys.stdin)}))

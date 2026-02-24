@@ -1,0 +1,1 @@
+import sys, json; data = json.load(sys.stdin); print(json.dumps({"greeting": f"Hello, {data["name"]}"}))
