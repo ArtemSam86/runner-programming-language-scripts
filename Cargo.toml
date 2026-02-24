@@ -1,14 +1,8 @@
-# [package]
-# name = "runner-python-scripts"
-# version = "0.1.0"
-# edition = "2024"
-
-# [dependencies]
-
 [package]
 name = "rust_python_axum"
 version = "0.2.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 axum = "0.7"
