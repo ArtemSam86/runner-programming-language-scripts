@@ -89,7 +89,22 @@ curl http://localhost:3000/scripts
 
 Ответ:
 ```json
-["example.py", "another.py"]
+[
+   {
+      "name": "hello.py",
+      "size": 123,
+      "created": "2026-03-06T11:20:41.430500908Z",
+      "modified": "2026-03-06T15:08:25.203955429Z",
+      "description": "Простой приветственный скрипт"
+   },
+   {
+      "name": "math.js",
+      "size": 456,
+      "created": "2026-03-06T12:00:00Z",
+      "modified": "2026-03-06T12:00:00Z",
+      "description": null
+   }
+]
 ```
 
 ### 2. Создать новый скрипт
@@ -219,6 +234,33 @@ curl -X POST "http://localhost:3000/run?names=hello.py,another.py" \
   -d '{"data": {"value": 100}}'
 ```
 
+
+### 7. Получить все описания:
+```bash
+curl -H GET http://localhost:3000/scripts/descriptions
+```
+
+Ответ:
+```json
+{
+  "hello.py": "Простой приветственный скрипт",
+  "math.js": "Вычисляет квадрат числа"
+}
+```
+
+### 8. Обновить описания (добавить/изменить/удалить):
+```bash
+curl -X POST http://localhost:3000/scripts/descriptions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "hello.py": "Обновлённое описание",
+    "math.js": "",
+    "new.py": "Новый скрипт"
+  }'
+```
+- Если значение — непустая строка, описание добавляется или обновляется.
+- Если значение — пустая строка, описание удаляется для данного ключа.
+Ответ — актуальный объект со всеми описаниями после обновления.
 ---
 
 ## Примеры использования

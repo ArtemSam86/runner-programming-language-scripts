@@ -1,8 +1,8 @@
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{StatusCode, HeaderValue},
     response::IntoResponse,
-    routing::{get, post, put},
+    routing::{get, post},
     Json, Router,
 };
 use bytes::Bytes;
@@ -24,6 +24,8 @@ use tokio::{
     sync::{Mutex, Semaphore},
     time::timeout,
 };
+use chrono::{DateTime, Local, Utc};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -92,6 +94,7 @@ struct CachedResult {
 // ------------------------------------------------------------
 pub struct AppState {
     scripts_dir: PathBuf,
+    descriptions_path: PathBuf,
     scripts: Mutex<Vec<PathBuf>>,
     semaphore: Semaphore,
     cache: Mutex<HashMap<String, CachedResult>>,
@@ -100,8 +103,10 @@ pub struct AppState {
 
 impl AppState {
     fn new(scripts_dir: PathBuf, max_concurrent: usize, cache_ttl: Duration) -> Arc<Self> {
+        let descriptions_path = scripts_dir.join("descriptions.json");
         Arc::new(Self {
             scripts_dir,
+            descriptions_path,
             scripts: Mutex::new(Vec::new()),
             semaphore: Semaphore::new(max_concurrent),
             cache: Mutex::new(HashMap::new()),
@@ -276,6 +281,37 @@ impl AppState {
             timed_out,
         })
     }
+    
+    async fn load_descriptions(&self) -> Result<HashMap<String, String>, AppError> {
+        if !self.descriptions_path.exists() {
+            return Ok(HashMap::new());
+        }
+        let content = fs::read_to_string(&self.descriptions_path).await?;
+        if content.trim().is_empty() {
+            return Ok(HashMap::new());
+        }
+        let descriptions = serde_json::from_str(&content)?;
+        Ok(descriptions)
+    }
+
+    async fn save_descriptions(&self, descriptions: &HashMap<String, String>) -> Result<(), AppError> {
+        let content = serde_json::to_string_pretty(descriptions)?;
+        fs::write(&self.descriptions_path, content).await?;
+        Ok(())
+    }
+
+    async fn update_descriptions(&self, updates: HashMap<String, String>) -> Result<HashMap<String, String>, AppError> {
+        let mut current = self.load_descriptions().await?;
+        for (name, desc) in updates {
+            if desc.trim().is_empty() {
+                current.remove(&name);
+            } else {
+                current.insert(name, desc);
+            }
+        }
+        self.save_descriptions(&current).await?;
+        Ok(current)
+    }
 }
 
 // ------------------------------------------------------------
@@ -290,6 +326,11 @@ pub struct RunRequest {
 #[derive(Debug, Deserialize)]
 pub struct RunQuery {
     names: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SearchQuery {
+    pub query: Option<String>,  // может быть None или пустой строкой
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -316,22 +357,112 @@ pub struct UpdateScriptRequest {
     code: String,
 }
 
+#[derive(Serialize)]
+pub struct ScriptMetadata {
+    name: String,
+    size: u64,
+    modified: DateTime<Utc>,
+    created: DateTime<Utc>,
+    description: Option<String>,
+}
+
 // ------------------------------------------------------------
 // Обработчики
 // ------------------------------------------------------------
-async fn list_scripts(State(state): State<Arc<AppState>>) -> Result<Json<Vec<String>>, AppError> {
-    let scripts = state.scripts.lock().await;
-    let names = scripts
-        .iter()
-        .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
-        .collect();
-    Ok(Json(names))
+pub async fn list_scripts(
+    State(state): State<Arc<AppState>>,
+    Query(search_query): Query<SearchQuery>,
+) -> Result<Json<Vec<ScriptMetadata>>, AppError> {
+    info!("Get search scripts with metadata");
+
+    // Загружаем описания
+    let descriptions = state.load_descriptions().await?;
+
+    // Получаем список путей к скриптам
+    let paths = {
+        let scripts = state.scripts.lock().await;
+        scripts.clone()
+    };
+
+    let mut metadatas = Vec::with_capacity(paths.len());
+
+    for path in paths {
+        // Получаем имя файла
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| AppError::Internal("Invalid file name".to_string()))?
+            .to_string();
+
+        // Получаем метаданные файла
+        let meta = fs::metadata(&path).await?;
+
+        // Преобразуем временные метки
+        let datetime_modified: DateTime<Local> = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
+        let modified = datetime_modified.to_utc();
+
+        let datetime_created: DateTime<Local> = meta.created().unwrap_or(SystemTime::UNIX_EPOCH).into();
+        let created = datetime_created.to_utc();
+
+        let description = descriptions.get(&file_name).cloned(); // получаем описание
+
+        metadatas.push(ScriptMetadata {
+            name: file_name,
+            description,
+            size: meta.len(),
+            modified,
+            created,
+        });
+    }
+
+    // Фильтрация по всем полям, если задан поисковый запрос
+    if let Some(query) = &search_query.query {
+        let query_lower = query.to_lowercase();
+        if !query_lower.is_empty() {
+            metadatas.retain(|m| {
+                m.name.to_lowercase().contains(&query_lower)
+                    || m.size.to_string().contains(query)
+                    || m.modified.to_string().to_lowercase().contains(&query_lower)
+                    || m.created.to_string().to_lowercase().contains(&query_lower)
+                    || m.description.as_ref().map(|d| d.to_lowercase()
+                    .contains(&query_lower)).unwrap_or(false)
+            });
+        }
+    }
+
+    // Сортировка по алфавиту (по имени файла)
+    // metadatas.sort_by(|a, b| a.name.cmp(&b.name));
+    // Для регистронезависимой сортировки можно использовать:
+    metadatas.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    Ok(Json(metadatas))
+}
+
+async fn get_script(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    info!("Get script {}", &name);
+    let path = state.scripts_dir.join(&name);
+    // Проверяем, что файл существует и входит в список известных скриптов
+    {
+        let scripts = state.scripts.lock().await;
+        if !scripts.contains(&path) {
+            return Err(AppError::ScriptNotFound(name));
+        }
+    }
+    let code = fs::read_to_string(&path).await?;
+    Ok(Json(serde_json::json!({
+        "name": name,
+        "code": code
+    })))
 }
 
 async fn create_script(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<CreateScriptRequest>,
 ) -> Result<StatusCode, AppError> {
+    info!("Creating script {}", &payload.name);
     state.save_script(&payload.name, &payload.code).await?;
     Ok(StatusCode::CREATED)
 }
@@ -341,6 +472,7 @@ async fn update_script(
     Path(name): Path<String>,
     Json(payload): Json<UpdateScriptRequest>,
 ) -> Result<StatusCode, AppError> {
+    info!("Updating script {}", &payload.code);
     let path = state.scripts_dir.join(&name);
     if !path.exists() {
         return Err(AppError::ScriptNotFound(name));
@@ -353,6 +485,7 @@ async fn delete_script(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    info!("Delete script {}", &name);
     state.delete_script(&name).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -362,6 +495,7 @@ async fn run_scripts(
     Query(query): Query<RunQuery>,
     Json(payload): Json<RunRequest>,
 ) -> Result<Json<RunResponse>, AppError> {
+    info!("Run scripts {}", &payload.data);
     let target_names: Vec<String> = match query.names {
         Some(names_str) => names_str
             .split(',')
@@ -426,12 +560,27 @@ async fn run_single_script(
     Path(name): Path<String>,
     Json(payload): Json<RunRequest>,
 ) -> Result<Json<ScriptResult>, AppError> {
+    info!("Run single script {}", &payload.data);
     let input_bytes = Bytes::from(serde_json::to_vec(&payload.data)?);
     let args = payload.args.unwrap_or_default();
     let result = state.run_script(&name, args, input_bytes).await?;
     Ok(Json(result))
 }
 
+async fn get_descriptions(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<HashMap<String, String>>, AppError> {
+    let descriptions = state.load_descriptions().await?;
+    Ok(Json(descriptions))
+}
+
+async fn update_descriptions(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<HashMap<String, String>>,
+) -> Result<Json<HashMap<String, String>>, AppError> {
+    let updated = state.update_descriptions(payload).await?;
+    Ok(Json(updated))
+}
 // ------------------------------------------------------------
 // Запуск сервера
 // ------------------------------------------------------------
@@ -463,11 +612,47 @@ async fn main() {
         }
     });
 
+    // Настройка CORS
+    let origins = std::env::var("ALLOWED_ORIGINS").ok();
+    let (allow_origin, is_any) = if let Some(origins_str) = origins {
+        if origins_str == "*" {
+            (AllowOrigin::any(), true)
+        } else {
+            let origins: Vec<HeaderValue> = origins_str
+                .split(',')
+                .map(|s| s.trim().parse().expect("Invalid origin format"))
+                .collect();
+            (AllowOrigin::list(origins), false)
+        }
+    } else {
+        (AllowOrigin::any(), true)
+    };
+
+    let mut cors = CorsLayer::new()
+        .allow_origin(allow_origin)
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::DELETE,
+        ])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            axum::http::header::ACCEPT,
+        ]);
+
+    if !is_any && std::env::var("CORS_ALLOW_CREDENTIALS").as_deref() == Ok("true") {
+        cors = cors.allow_credentials(true);
+    }
+
     let app = Router::new()
         .route("/scripts", get(list_scripts).post(create_script))
-        .route("/scripts/:name", put(update_script).delete(delete_script))
+        .route("/scripts/descriptions", get(get_descriptions).post(update_descriptions))
+        .route("/scripts/{name}", get(get_script).put(update_script).delete(delete_script))
         .route("/run", post(run_scripts))
-        .route("/run/:name", post(run_single_script))
+        .route("/run/{name}", post(run_single_script))
+        .layer(cors)
         .with_state(state);
 
     let addr: SocketAddr = "0.0.0.0:3000".parse().unwrap(); // явно указываем тип
