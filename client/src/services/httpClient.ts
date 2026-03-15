@@ -1,79 +1,42 @@
-import { Axios, type AxiosRequestConfig, type AxiosResponse } from "axios";
+import axios from 'axios';
+import router from '@/router';
+import {LOGIN_NAME} from "@/router/constants.ts";
 
-type RequestDataType = Record<string, any>;
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
-export class ApiService<D> extends Axios {
-  private config: AxiosRequestConfig<D> = {};
-
-  constructor(config?: AxiosRequestConfig<D>) {
-    super();
-    Object.assign(this.config, config);
-  }
-
-  get<T = any, R = AxiosResponse<T>, D = RequestDataType>(
-    url: string,
-    config?: AxiosRequestConfig<D>,
-  ): Promise<R> {
-    const cfg = {
-      ...this.config,
-      ...config,
-    };
-    try {
-      return super.get(url, cfg);
-    } catch (error) {
-      return Promise.reject(error);
-    }
-  }
-
-  post<T = any, R = AxiosResponse<T>, D = RequestDataType>(
-      url: string,
-      data?: D,
-      config?: AxiosRequestConfig<D>
-  ): Promise<R> {
-    const cfg = {
-      ...this.config,
-      ...config,
-    };
-
-    try {
-      return super.post(url, data, cfg);
-    } catch (error) {
-      return Promise.reject(error);
-    }
-  }
-
-  put<T = any, R = AxiosResponse<T>, D = any>(url: string, data?: D, config?: AxiosRequestConfig<D>): Promise<R> {
-    const cfg = {
-      ...this.config,
-      ...config,
-    };
-
-    try {
-      return super.put(url, data, cfg);
-    } catch (error) {
-      return Promise.reject(error);
-    }
-  }
-
-  delete<T = any, R = AxiosResponse<T>, D = any>(url: string, config?: AxiosRequestConfig<D>): Promise<R> {
-    const cfg = {
-      ...this.config,
-      ...config,
-    };
-
-    try {
-      return super.delete(url, cfg);
-    } catch (error) {
-      return Promise.reject(error);
-    }
-  }
-}
-
-export default new ApiService<RequestDataType>({
-  baseURL: "http://localhost:3000",
+const api = axios.create({
+  baseURL: API_URL,
   headers: {
-    "Content-Type": "application/json",
-    // "Access-Control-Allow-Origin": "*",
-    // Accept: "application/json",
+  "Content-Type": "application/json",
+  // "Access-Control-Allow-Origin": "*",
+  // Accept: "application/json",
   },
 });
+
+api.interceptors.request.use(
+    (config) => {
+      const token = localStorage.getItem('token');
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+      return config;
+    },
+    (error) => Promise.reject(error)
+);
+
+// Обработка ошибок 401 – перенаправление на логин
+api.interceptors.response.use(
+    (response) => response,
+    (error) => {
+      if (error.response?.status === 401) {
+        // Очистить хранилище и перенаправить на страницу логина
+        localStorage.removeItem('token');
+        localStorage.removeItem('username');
+        router.push({ name: LOGIN_NAME });
+        // window.location.href = '/login';
+      }
+      return Promise.reject(error);
+    }
+);
+
+export default api;

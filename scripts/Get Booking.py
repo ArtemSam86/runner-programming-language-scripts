@@ -1,7 +1,7 @@
 import requests
 import json
 
-# 1. GET-запрос: Получение списка постов
+# 1. GET-запрос: Получение списка постов РЕДАКТ с РЕЗАЛТОМ
 url = 'https://restful-booker.herokuapp.com/booking'
 response = requests.get(url)
 

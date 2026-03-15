@@ -1,0 +1,59 @@
+services:
+  mongodb:
+    image: mongo:7
+    container_name: script-mongodb
+    restart: unless-stopped
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - script-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: script-backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB_NAME=script_manager
+      - RUST_LOG=info
+      - ALLOWED_ORIGINS=http://localhost:8080,http://localhost:8081
+      - CORS_ALLOW_CREDENTIALS=false
+      - JWT_SECRET=${JWT_SECRET}
+      - SUPER_ADMIN_NAME=${SUPER_ADMIN_NAME:-superadmin}
+      - SUPER_ADMIN_PASSWORD=${SUPER_ADMIN_PASSWORD}
+    volumes:
+      - ./scripts:/app/scripts
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - script-network
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: script-client
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    networks:
+      - script-network
+    depends_on:
+      - backend
+
+volumes:
+  mongodb_data:
+
+networks:
+  script-network:
+    driver: bridge

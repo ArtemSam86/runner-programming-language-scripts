@@ -13,37 +13,46 @@ import {Button} from "@/components/ui/button";
 import {Pencil} from "lucide-vue-next";
 import {ref} from "vue";
 import {Input} from "@/components/ui/input";
+import {Codemirror} from "vue-codemirror";
+import type {Extension} from "@codemirror/state";
+import type {SaveScriptParams} from "@/shared/types/components.ts";
 
 interface Emits {
-  downloadScriptCode: [name: string];
-  updateCurrentScript: [name: string];
-  close: [];
+  onSaveEditedScript: [params: SaveScriptParams];
+}
+interface Props {
+  scriptName: string;
+  scriptCode: string;
+  scriptDescription: string;
+  extensions: Extension[];
 }
 
 const emits = defineEmits<Emits>();
-const { scriptName } = defineProps<{ scriptName: string }>();
+const { scriptName, scriptCode, scriptDescription } = defineProps<Props>();
 
-const description = defineModel('description', { default: '' });
+const code = ref(scriptCode);
+const description = ref(scriptDescription);
+const isOpen = ref(false);
 
-const isOpenDrawerEdit = ref(false);
-
-const updateCurrentScript = () => {
-  emits('updateCurrentScript', scriptName);
-  isOpenDrawerEdit.value = false;
+const onSave = () => {
+  emits('onSaveEditedScript', {
+    name: scriptName,
+    code: code.value,
+    description: description.value,
+  });
+  isOpen.value = false;
 };
-const downloadScriptCode = () => {
-  emits('downloadScriptCode', scriptName);
+const handleClose = () => {
+  code.value = scriptCode;
+  description.value = scriptDescription;
 };
 </script>
 
 <template>
-  <Drawer
-      v-model:open="isOpenDrawerEdit"
-      @close="emits('close')"
-  >
+  <Drawer v-model:open="isOpen">
     <DrawerTrigger
         class="flex gap-2 items-center"
-        @click.stop="downloadScriptCode"
+        @click.stop
     >
       <Pencil />
       Редактировать скрипт
@@ -62,13 +71,16 @@ const downloadScriptCode = () => {
         </DrawerHeader>
 
         <div class="pl-4 pr-4">
-          <slot name="editorCode" />
+          <Codemirror
+              v-model="code"
+              :extensions
+          />
         </div>
 
         <DrawerFooter class="flex flex-row items-center gap-2">
           <Button
               class="cursor-pointer"
-              @click="updateCurrentScript"
+              @click="onSave"
           >
             Сохранить
           </Button>
@@ -76,6 +88,7 @@ const downloadScriptCode = () => {
             <Button
                 class="cursor-pointer"
                 variant="outline"
+                @click="handleClose"
             >
               Отмена
             </Button>
